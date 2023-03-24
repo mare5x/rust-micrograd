@@ -1,5 +1,9 @@
-use std::{ops::{Add, Mul}, rc::Rc, cell::{RefCell, Ref, RefMut}, borrow::Borrow};
+use std::{ops::{Add, Mul}, rc::Rc, cell::{RefCell, Ref, RefMut}, sync::atomic::AtomicUsize, collections::HashSet};
 use std::fmt;
+
+// TODO don't do this
+// N.B. This was only necessary for topological sorting...
+static VAL_CNT: AtomicUsize = AtomicUsize::new(0);
 
 pub struct GradFn {
     name: String,
@@ -32,11 +36,13 @@ pub struct Value {
     pub grad: f64,
     prev: Vec<WrappedValue>,
     grad_fn: GradFn,
+    id: usize,  // Unique id; for sorting purposes.
 }
 
 impl Value {
     fn new(data: f64) -> Value {
-        Value { data, grad: 0.0, prev: vec![], grad_fn: GradFn::empty() }
+        let id = VAL_CNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Value { data, grad: 0.0, prev: vec![], grad_fn: GradFn::empty(), id }
     }
 
     fn backward(&mut self) {
@@ -69,6 +75,38 @@ impl WrappedValue {
     fn data(&self) -> f64 {
         let v = &*self.0;
         v.borrow().data
+    }
+
+    fn topological_sort(root: &WrappedValue) -> Vec<WrappedValue> {
+        fn build(root: &WrappedValue, visited: &mut HashSet<usize>, out: &mut Vec<WrappedValue>) {
+            visited.insert(root.value().id);
+            for v in root.value().prev.iter() {
+                if !visited.contains(&v.value().id) {
+                    build(v, visited, out);
+                }
+            }
+            out.push(root.clone());
+        }
+        let mut visited = HashSet::new();
+        let mut out = Vec::new();
+        build(root, &mut visited, &mut out);
+        out.reverse();
+        out
+    }
+
+    /// Initiate gradient backpropagation, calculating the gradient
+    /// w.r.t. to this node's value.
+    fn backward(&mut self) {
+        // We must first topologically sort the nodes in the computation
+        // graph so that a node doesn't start backpropagating its gradient
+        // before its own gradient is calculated.
+        let order = Self::topological_sort(self);
+        
+        // d(self) w.r.t. self = 1.0
+        self.value_mut().grad = 1.0;
+        for v in order.iter() {
+            v.value_mut().backward();
+        }
     }
 }
 
@@ -177,7 +215,6 @@ impl Mul<f64> for &WrappedValue {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +274,32 @@ mod tests {
         assert_eq!(v1.value().grad, 2.0);
     }
 
-    // #[test]
+    #[test]
+    fn topological_order() {
+        let v1 = WrappedValue::from(5.0);
+        let v2 = WrappedValue::from(1.0);
+        let v3 = &v1 + &v2;   // 6
+        let v4 = 2.0 * &v3;   // 12
+        let v5 = 3.0 * &v3;   // 18
+        let v6 = &v4 * &v5;   // 216
 
+        let order = WrappedValue::topological_sort(&v6);
+        let datas: Vec<f64> = order.iter().map(|x| x.data()).collect();
+        assert_eq!(datas.len(), 6);
+        assert_eq!(datas, vec![216.0, 18.0, 12.0, 6.0, 1.0, 5.0]);
+    }
+
+    #[test]
+    fn backward() {
+        let v1 = WrappedValue::from(5.0);
+        let v2 = WrappedValue::from(1.0);
+        let v3 = &v1 + &v2;       // 6
+        let v4 = 2.0 * &v3;       // 12
+        let v5 = 3.0 * &v3;       // 18
+        let mut v6 = &v4 * &v5;   // 216
+
+        v6.backward();
+        assert_eq!(v1.value().grad, 12.0 * (v1.data() + v2.data()));
+        assert_eq!(v2.value().grad, 12.0 * (v1.data() + v2.data()));
+    }
 }
