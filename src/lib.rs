@@ -1,4 +1,4 @@
-use std::{ops::Add, rc::Rc, cell::{RefCell, Ref, RefMut}};
+use std::{ops::{Add, Mul}, rc::Rc, cell::{RefCell, Ref, RefMut}, borrow::Borrow};
 use std::fmt;
 
 pub struct GradFn {
@@ -93,6 +93,91 @@ impl Add for WrappedValue {
     }
 }
 
+impl Add for &WrappedValue {
+    type Output = WrappedValue;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        self.clone() + rhs.clone()
+    }
+}
+
+impl Mul for WrappedValue {
+    type Output = WrappedValue;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        let v1 = self.clone();
+        let v2 = rhs.clone();
+        
+        let grad_fn = GradFn::new("mul", move |grad| {
+            v1.value_mut().grad += grad * v2.data();
+            v2.value_mut().grad += grad * v1.data();
+        });
+        
+        let mut v = Value::new(self.data() * rhs.data());
+        v.prev.push(self.clone());
+        v.prev.push(rhs.clone());
+        v.grad_fn = grad_fn;
+        
+        WrappedValue::new(v)
+    }
+}
+
+impl Mul for &WrappedValue {
+    type Output = WrappedValue;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        self.clone() * rhs.clone()
+    }
+}
+
+impl Mul<WrappedValue> for f64 {
+    type Output = WrappedValue;
+
+    fn mul(self, rhs: WrappedValue) -> Self::Output {
+        // N.B. A simpler but more inefficient implementation would be:
+        // ```
+        // let lhs = WrappedValue::from(self);
+        // &lhs * &rhs
+        // ```
+
+        let v2 = rhs.clone();        
+        let grad_fn = GradFn::new("smul", move |grad| {
+            v2.value_mut().grad += grad * self;
+        });
+        
+        let mut v = Value::new(self * rhs.data());
+        v.prev.push(rhs.clone());
+        v.grad_fn = grad_fn;
+        
+        WrappedValue::new(v)
+    }
+}
+
+impl Mul<&WrappedValue> for f64 {
+    type Output = WrappedValue;
+
+    fn mul(self, rhs: &WrappedValue) -> Self::Output {
+        self * rhs.clone()
+    }
+}
+
+impl Mul<f64> for WrappedValue { 
+    type Output = WrappedValue;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        rhs * self
+    }
+}
+
+impl Mul<f64> for &WrappedValue {
+    type Output = WrappedValue;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        rhs * self
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,7 +193,7 @@ mod tests {
     fn add_values() {
         let v1 = WrappedValue::from(5.0);
         let v2 = WrappedValue::from(1.0);
-        let v = v1.clone() + v2.clone();
+        let v = &v1 + &v2;
         assert_eq!(v.data(), 6.0);
         assert_eq!(v.value().grad_fn.name, "add");
 
@@ -122,7 +207,36 @@ mod tests {
         v.grad = 1.0;
         v.backward();
         assert_eq!(v1.value().grad, v.grad);
+        assert_eq!(v2.value().grad, v.grad);
     }
 
+    #[test]
+    fn multiply() {
+        let v1 = WrappedValue::from(5.0);
+        let v2 = WrappedValue::from(2.0);
+        let v = &v1 * &v2;
+        assert_eq!(v.data(), 10.0);
+        assert_eq!(v.value().grad_fn.name, "mul");
+        let mut v = v.value_mut();
+        v.grad = 1.0;
+        v.backward();
+        assert_eq!(v1.value().grad, 2.0);
+        assert_eq!(v2.value().grad, 5.0);
+    }
+
+    #[test]
+    fn scalar_multiply() {
+        let v1 = WrappedValue::from(5.0);
+        let v = 2.0 * &v1;
+        assert_eq!(v.data(), 10.0);
+        assert_eq!(v.value().grad_fn.name, "smul");
+        assert_eq!(v.value().prev.len(), 1);
+        let mut v = v.value_mut();
+        v.grad = 1.0;
+        v.backward();
+        assert_eq!(v1.value().grad, 2.0);
+    }
+
+    // #[test]
 
 }
