@@ -1,4 +1,4 @@
-use std::{ops::{Add, Mul, Sub}, rc::Rc, cell::{RefCell, Ref, RefMut}, sync::atomic::AtomicUsize, collections::HashSet};
+use std::{ops::{Add, Mul, Sub, Div}, rc::Rc, cell::{RefCell, Ref, RefMut}, sync::atomic::AtomicUsize, collections::HashSet};
 use std::fmt;
 
 // TODO don't do this
@@ -110,6 +110,60 @@ impl WrappedValue {
     }
 }
 
+
+#[macro_export]
+macro_rules! binary_op {
+    [ $trait:ident, $op_name:ident, $op:tt ] => {
+        impl $trait for &WrappedValue {
+            type Output = WrappedValue;
+            
+            fn $op_name(self, rhs: Self) -> Self::Output {
+                self.clone() $op rhs.clone()
+            }
+        }
+
+        // N.B. For scalars values we could simplify the code, but
+        // we would have to split on whether the operation is commutative or not.
+        impl $trait<f64> for WrappedValue {
+            type Output = WrappedValue;
+            
+            fn $op_name(self, rhs: f64) -> Self::Output {
+                self $op <WrappedValue>::from(rhs)
+            }
+        }
+
+        impl $trait<f64> for &WrappedValue {
+            type Output = WrappedValue;
+            
+            fn $op_name(self, rhs: f64) -> Self::Output {
+                self.clone() $op rhs
+            }
+        }
+
+        impl $trait<WrappedValue> for f64 {
+            type Output = WrappedValue;
+            
+            fn $op_name(self, rhs: WrappedValue) -> Self::Output {
+                <WrappedValue>::from(self) $op rhs
+            }
+        }
+
+        impl $trait<&WrappedValue> for f64 {
+            type Output = WrappedValue;
+            
+            fn $op_name(self, rhs: &WrappedValue) -> Self::Output {
+                self $op rhs.clone()
+            }
+        }
+    };
+}
+
+binary_op![Add, add, +];
+binary_op![Sub, sub, -];
+binary_op![Mul, mul, *];
+binary_op![Div, div, /];
+
+
 impl Add for WrappedValue {
     type Output = WrappedValue;
 
@@ -131,59 +185,24 @@ impl Add for WrappedValue {
     }
 }
 
-impl Add for &WrappedValue {
-    type Output = WrappedValue;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        self.clone() + rhs.clone()
-    }
-}
-
-impl Add<f64> for WrappedValue {
-    type Output = WrappedValue;
-
-    fn add(self, rhs: f64) -> Self::Output {
-        self + WrappedValue::from(rhs)
-    }
-}
-
-impl Add<f64> for &WrappedValue {
-    type Output = WrappedValue;
-
-    fn add(self, rhs: f64) -> Self::Output {
-        self.clone() + rhs
-    }
-}
-
 impl Sub for WrappedValue {
     type Output = WrappedValue;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        self + (-1.0 * rhs)
-    }
-}
-
-impl Sub for &WrappedValue {
-    type Output = WrappedValue;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        self.clone() - rhs.clone()
-    }
-}
-
-impl Sub<f64> for WrappedValue {
-    type Output = WrappedValue;
-
-    fn sub(self, rhs: f64) -> Self::Output {
-        self - WrappedValue::from(rhs)
-    }
-}
-
-impl Sub<f64> for &WrappedValue {
-    type Output = WrappedValue;
-
-    fn sub(self, rhs: f64) -> Self::Output {
-        self.clone() - rhs
+        let v1 = self.clone();
+        let v2 = rhs.clone();
+        
+        let grad_fn = GradFn::new("sub", move |grad| {
+            v1.value_mut().grad += grad;
+            v2.value_mut().grad += grad * -1.0;
+        });
+        
+        let mut v = Value::new(self.data() - rhs.data());
+        v.prev.push(self.clone());
+        v.prev.push(rhs.clone());
+        v.grad_fn = grad_fn;
+        
+        WrappedValue::new(v)
     }
 }
 
@@ -208,30 +227,20 @@ impl Mul for WrappedValue {
     }
 }
 
-impl Mul for &WrappedValue {
+impl Div for WrappedValue {
     type Output = WrappedValue;
 
-    fn mul(self, rhs: Self) -> Self::Output {
-        self.clone() * rhs.clone()
-    }
-}
-
-impl Mul<WrappedValue> for f64 {
-    type Output = WrappedValue;
-
-    fn mul(self, rhs: WrappedValue) -> Self::Output {
-        // N.B. A simpler but more inefficient implementation would be:
-        // ```
-        // let lhs = WrappedValue::from(self);
-        // &lhs * &rhs
-        // ```
-
-        let v2 = rhs.clone();        
-        let grad_fn = GradFn::new("smul", move |grad| {
-            v2.value_mut().grad += grad * self;
+    fn div(self, rhs: Self) -> Self::Output {
+        let v1 = self.clone();
+        let v2 = rhs.clone();
+        
+        let grad_fn = GradFn::new("div", move |grad| {
+            v1.value_mut().grad += grad * 1.0 / v2.data();
+            v2.value_mut().grad += grad * -1.0 * v1.data() / (v2.data() * v2.data());
         });
         
-        let mut v = Value::new(self * rhs.data());
+        let mut v = Value::new(self.data() / rhs.data());
+        v.prev.push(self.clone());
         v.prev.push(rhs.clone());
         v.grad_fn = grad_fn;
         
@@ -239,29 +248,6 @@ impl Mul<WrappedValue> for f64 {
     }
 }
 
-impl Mul<&WrappedValue> for f64 {
-    type Output = WrappedValue;
-
-    fn mul(self, rhs: &WrappedValue) -> Self::Output {
-        self * rhs.clone()
-    }
-}
-
-impl Mul<f64> for WrappedValue { 
-    type Output = WrappedValue;
-
-    fn mul(self, rhs: f64) -> Self::Output {
-        rhs * self
-    }
-}
-
-impl Mul<f64> for &WrappedValue {
-    type Output = WrappedValue;
-
-    fn mul(self, rhs: f64) -> Self::Output {
-        rhs * self
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -314,8 +300,8 @@ mod tests {
         let v1 = WrappedValue::from(5.0);
         let v = 2.0 * &v1;
         assert_eq!(v.data(), 10.0);
-        assert_eq!(v.value().grad_fn.name, "smul");
-        assert_eq!(v.value().prev.len(), 1);
+        assert_eq!(v.value().grad_fn.name, "mul");
+        assert_eq!(v.value().prev.len(), 2);
         let mut v = v.value_mut();
         v.grad = 1.0;
         v.backward();
@@ -332,6 +318,15 @@ mod tests {
     }
 
     #[test]
+    fn div() {
+        let v1 = WrappedValue::from(5.0);
+        let mut v2 = 2.0 / &v1;
+        assert_eq!(v2.data(), 2.0 / 5.0);
+        v2.backward();
+        assert_eq!(v1.value().grad, -2.0 / 25.0);
+    }
+
+    #[test]
     fn topological_order() {
         let v1 = WrappedValue::from(5.0);
         let v2 = WrappedValue::from(1.0);
@@ -342,8 +337,8 @@ mod tests {
 
         let order = WrappedValue::topological_sort(&v6);
         let datas: Vec<f64> = order.iter().map(|x| x.data()).collect();
-        assert_eq!(datas.len(), 6);
-        assert_eq!(datas, vec![216.0, 18.0, 12.0, 6.0, 1.0, 5.0]);
+        assert_eq!(datas.len(), 8);
+        assert_eq!(datas, vec![216.0, 18.0, 3.0, 12.0, 6.0, 1.0, 5.0, 2.0]);
     }
 
     #[test]
