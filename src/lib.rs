@@ -1,4 +1,4 @@
-use std::{ops::{Add, Mul}, rc::Rc, cell::{RefCell, Ref, RefMut}, sync::atomic::AtomicUsize, collections::HashSet};
+use std::{ops::{Add, Mul, Sub}, rc::Rc, cell::{RefCell, Ref, RefMut}, sync::atomic::AtomicUsize, collections::HashSet};
 use std::fmt;
 
 // TODO don't do this
@@ -139,6 +139,54 @@ impl Add for &WrappedValue {
     }
 }
 
+impl Add<f64> for WrappedValue {
+    type Output = WrappedValue;
+
+    fn add(self, rhs: f64) -> Self::Output {
+        self + WrappedValue::from(rhs)
+    }
+}
+
+impl Add<f64> for &WrappedValue {
+    type Output = WrappedValue;
+
+    fn add(self, rhs: f64) -> Self::Output {
+        self.clone() + rhs
+    }
+}
+
+impl Sub for WrappedValue {
+    type Output = WrappedValue;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        self + (-1.0 * rhs)
+    }
+}
+
+impl Sub for &WrappedValue {
+    type Output = WrappedValue;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        self.clone() - rhs.clone()
+    }
+}
+
+impl Sub<f64> for WrappedValue {
+    type Output = WrappedValue;
+
+    fn sub(self, rhs: f64) -> Self::Output {
+        self - WrappedValue::from(rhs)
+    }
+}
+
+impl Sub<f64> for &WrappedValue {
+    type Output = WrappedValue;
+
+    fn sub(self, rhs: f64) -> Self::Output {
+        self.clone() - rhs
+    }
+}
+
 impl Mul for WrappedValue {
     type Output = WrappedValue;
 
@@ -272,6 +320,15 @@ mod tests {
         v.grad = 1.0;
         v.backward();
         assert_eq!(v1.value().grad, 2.0);
+    }
+
+    #[test]
+    fn add_sub() {
+        let v1 = WrappedValue::from(5.0);
+        let v2 = &v1 - 10.0;
+        let v3 = &v1 - &v1;
+        assert_eq!(v2.data(), -5.0);
+        assert_eq!(v3.data(), 0.0);
     }
 
     #[test]
