@@ -1,5 +1,11 @@
-use std::{ops::{Add, Mul, Sub, Div}, rc::Rc, cell::{RefCell, Ref, RefMut}, sync::atomic::AtomicUsize, collections::HashSet};
-use std::fmt;
+use std::{
+    fmt,
+    cell::{Ref, RefCell, RefMut},
+    collections::HashSet,
+    ops::{Add, Div, Mul, Sub},
+    rc::Rc,
+    sync::atomic::AtomicUsize,
+};
 
 // TODO don't do this
 // N.B. This was only necessary for topological sorting...
@@ -18,7 +24,10 @@ impl fmt::Debug for GradFn {
 
 impl GradFn {
     fn new(name: &str, grad_fn: impl FnMut(f64) -> () + 'static) -> Self {
-        Self { name: String::from(name), grad_fn: Box::new(grad_fn) }
+        Self {
+            name: String::from(name),
+            grad_fn: Box::new(grad_fn),
+        }
     }
 
     fn empty() -> GradFn {
@@ -31,57 +40,66 @@ impl GradFn {
 }
 
 #[derive(Debug)]
-pub struct Value {
+pub struct Data {
     pub data: f64,
     pub grad: f64,
-    prev: Vec<WrappedValue>,
+    prev: Vec<Value>,
     grad_fn: GradFn,
-    id: usize,  // Unique id; for sorting purposes.
+    id: usize, // Unique id; for sorting purposes.
 }
 
-impl Value {
-    fn new(data: f64) -> Value {
+impl Data {
+    fn new(data: f64) -> Data {
         let id = VAL_CNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Value { data, grad: 0.0, prev: vec![], grad_fn: GradFn::empty(), id }
+        Data {
+            data,
+            grad: 0.0,
+            prev: vec![],
+            grad_fn: GradFn::empty(),
+            id,
+        }
     }
 
+    /// Initiate local backward pass computation, updating the `grad`
+    /// of the children in the node's computation graph.
     fn backward(&mut self) {
         self.grad_fn.call(self.grad)
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct WrappedValue(Rc<RefCell<Value>>);
+pub struct Value(Rc<RefCell<Data>>);
 
-impl WrappedValue {
-    fn new(value: Value) -> WrappedValue {
-        WrappedValue(Rc::new(RefCell::new(value)))
+impl Value {
+    fn new(value: Data) -> Value {
+        Value(Rc::new(RefCell::new(value)))
     }
 
-    fn from(data: f64) -> WrappedValue {
-        WrappedValue::new(Value::new(data))
+    fn from(data: f64) -> Value {
+        Value::new(Data::new(data))
     }
 
-    fn value(&self) -> Ref<Value> {
-        let v = &*self.0;
-        v.borrow()
+    fn inner(&self) -> Ref<Data> {
+        (*self.0).borrow()
     }
 
-    fn value_mut(&self) -> RefMut<Value> {
-        let v = &*self.0;
-        v.borrow_mut()
+    fn inner_mut(&self) -> RefMut<Data> {
+        (*self.0).borrow_mut()
     }
 
     fn data(&self) -> f64 {
-        let v = &*self.0;
-        v.borrow().data
+        (*self.0).borrow().data
     }
 
-    fn topological_sort(root: &WrappedValue) -> Vec<WrappedValue> {
-        fn build(root: &WrappedValue, visited: &mut HashSet<usize>, out: &mut Vec<WrappedValue>) {
-            visited.insert(root.value().id);
-            for v in root.value().prev.iter() {
-                if !visited.contains(&v.value().id) {
+    fn grad(&self) -> f64 {
+        (*self.0).borrow().grad
+    }
+
+    fn topological_sort(root: &Value) -> Vec<Value> {
+        fn build(root: &Value, visited: &mut HashSet<usize>, out: &mut Vec<Value>) {
+            visited.insert(root.inner().id);
+            for v in root.inner().prev.iter() {
+                if !visited.contains(&v.inner().id) {
                     build(v, visited, out);
                 }
             }
@@ -101,23 +119,22 @@ impl WrappedValue {
         // graph so that a node doesn't start backpropagating its gradient
         // before its own gradient is calculated.
         let order = Self::topological_sort(self);
-        
+
         // d(self) w.r.t. self = 1.0
-        self.value_mut().grad = 1.0;
+        self.inner_mut().grad = 1.0;
         for v in order.iter() {
-            v.value_mut().backward();
+            v.inner_mut().backward();
         }
     }
 }
 
-
-/// Macro to implement binary operation traits on `WrappedValue`s
+/// Macro to implement binary operation traits on `Value`s
 /// including `f64` expansion.
 macro_rules! binary_op {
     [ $trait:ident, $op_name:ident, $op:tt ] => {
-        impl $trait for &WrappedValue {
-            type Output = WrappedValue;
-            
+        impl $trait for &Value {
+            type Output = Value;
+
             fn $op_name(self, rhs: Self) -> Self::Output {
                 self.clone() $op rhs.clone()
             }
@@ -125,59 +142,59 @@ macro_rules! binary_op {
 
         // N.B. For scalars values we could simplify the code, but
         // we would have to split on whether the operation is commutative or not.
-        impl $trait<f64> for WrappedValue {
-            type Output = WrappedValue;
-            
+        impl $trait<f64> for Value {
+            type Output = Value;
+
             fn $op_name(self, rhs: f64) -> Self::Output {
-                self $op <WrappedValue>::from(rhs)
+                self $op <Value>::from(rhs)
             }
         }
 
-        impl $trait<f64> for &WrappedValue {
-            type Output = WrappedValue;
-            
+        impl $trait<f64> for &Value {
+            type Output = Value;
+
             fn $op_name(self, rhs: f64) -> Self::Output {
                 self.clone() $op rhs
             }
         }
 
-        impl $trait<WrappedValue> for f64 {
-            type Output = WrappedValue;
-            
-            fn $op_name(self, rhs: WrappedValue) -> Self::Output {
-                <WrappedValue>::from(self) $op rhs
+        impl $trait<Value> for f64 {
+            type Output = Value;
+
+            fn $op_name(self, rhs: Value) -> Self::Output {
+                <Value>::from(self) $op rhs
             }
         }
 
-        impl $trait<&WrappedValue> for f64 {
-            type Output = WrappedValue;
-            
-            fn $op_name(self, rhs: &WrappedValue) -> Self::Output {
+        impl $trait<&Value> for f64 {
+            type Output = Value;
+
+            fn $op_name(self, rhs: &Value) -> Self::Output {
                 self $op rhs.clone()
             }
         }
     };
 
     [ $trait:ident, $op_name:ident, $op:tt, $update_grad:expr ] => {
-        impl $trait for WrappedValue {
-            type Output = WrappedValue;
-        
+        impl $trait for Value {
+            type Output = Value;
+
             fn $op_name(self, rhs: Self) -> Self::Output {
                 let v1 = self.clone();
                 let v2 = rhs.clone();
-                
+
                 let grad_fn = GradFn::new(stringify!($op_name), move |grad| {
                     let (dv1, dv2) = $update_grad(grad, v1.data(), v2.data());
-                    v1.value_mut().grad += dv1;
-                    v2.value_mut().grad += dv2;
+                    v1.inner_mut().grad += dv1;
+                    v2.inner_mut().grad += dv2;
                 });
-                
-                let mut v = Value::new(self.data() $op rhs.data());
+
+                let mut v = Data::new(self.data() $op rhs.data());
                 v.prev.push(self.clone());
                 v.prev.push(rhs.clone());
                 v.grad_fn = grad_fn;
-                
-                WrappedValue::new(v)
+
+                Value::new(v)
             }
         }
 
@@ -190,69 +207,67 @@ binary_op![Sub, sub, -, |grad, _a,_b| { (grad, grad * -1.0) }];
 binary_op![Mul, mul, *, |grad, a, b| { (grad * b, grad * a) }];
 binary_op![Div, div, /, |grad, a, b| { (grad * 1.0 / b, grad * -1.0 * a / (b * b)) }];
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn make_value() {
-        let v = Value::new(5.0);
-        // println!("{v:?}");
+    fn make_data() {
+        let v = Data::new(5.0);
         assert_eq!(v.data, 5.0);
     }
 
     #[test]
     fn add_values() {
-        let v1 = WrappedValue::from(5.0);
-        let v2 = WrappedValue::from(1.0);
+        let v1 = Value::from(5.0);
+        let v2 = Value::from(1.0);
         let v = &v1 + &v2;
         assert_eq!(v.data(), 6.0);
-        assert_eq!(v.value().grad_fn.name, "add");
+        assert_eq!(v.inner().grad_fn.name, "add");
 
         {
-            let val = v.value();
+            let val = v.inner();
             let prev: Vec<f64> = val.prev.iter().map(|x| x.data()).collect();
             assert_eq!(prev, vec![v1.data(), v2.data()]);
         }
 
-        let mut v = v.value_mut();
+        let mut v = v.inner_mut();
         v.grad = 1.0;
         v.backward();
-        assert_eq!(v1.value().grad, v.grad);
-        assert_eq!(v2.value().grad, v.grad);
+        assert_eq!(v1.inner().grad, v.grad);
+        assert_eq!(v2.grad(), v.grad);
     }
 
     #[test]
     fn multiply() {
-        let v1 = WrappedValue::from(5.0);
-        let v2 = WrappedValue::from(2.0);
+        let v1 = Value::from(5.0);
+        let v2 = Value::from(2.0);
         let v = &v1 * &v2;
         assert_eq!(v.data(), 10.0);
-        assert_eq!(v.value().grad_fn.name, "mul");
-        let mut v = v.value_mut();
+        assert_eq!(v.inner().grad_fn.name, "mul");
+        let mut v = v.inner_mut();
         v.grad = 1.0;
         v.backward();
-        assert_eq!(v1.value().grad, 2.0);
-        assert_eq!(v2.value().grad, 5.0);
+        assert_eq!(v1.grad(), 2.0);
+        assert_eq!(v2.grad(), 5.0);
     }
 
     #[test]
     fn scalar_multiply() {
-        let v1 = WrappedValue::from(5.0);
+        let v1 = Value::from(5.0);
         let v = 2.0 * &v1;
         assert_eq!(v.data(), 10.0);
-        assert_eq!(v.value().grad_fn.name, "mul");
-        assert_eq!(v.value().prev.len(), 2);
-        let mut v = v.value_mut();
+        assert_eq!(v.inner().grad_fn.name, "mul");
+        assert_eq!(v.inner().prev.len(), 2);
+        let mut v = v.inner_mut();
         v.grad = 1.0;
         v.backward();
-        assert_eq!(v1.value().grad, 2.0);
+        assert_eq!(v1.grad(), 2.0);
     }
 
     #[test]
     fn add_sub() {
-        let v1 = WrappedValue::from(5.0);
+        let v1 = Value::from(5.0);
         let v2 = &v1 - 10.0;
         let v3 = &v1 - &v1;
         assert_eq!(v2.data(), -5.0);
@@ -261,23 +276,23 @@ mod tests {
 
     #[test]
     fn div() {
-        let v1 = WrappedValue::from(5.0);
+        let v1 = Value::from(5.0);
         let mut v2 = 2.0 / &v1;
         assert_eq!(v2.data(), 2.0 / 5.0);
         v2.backward();
-        assert_eq!(v1.value().grad, -2.0 / 25.0);
+        assert_eq!(v1.grad(), -2.0 / 25.0);
     }
 
     #[test]
     fn topological_order() {
-        let v1 = WrappedValue::from(5.0);
-        let v2 = WrappedValue::from(1.0);
-        let v3 = &v1 + &v2;   // 6
-        let v4 = 2.0 * &v3;   // 12
-        let v5 = 3.0 * &v3;   // 18
-        let v6 = &v4 * &v5;   // 216
+        let v1 = Value::from(5.0);
+        let v2 = Value::from(1.0);
+        let v3 = &v1 + &v2; // 6
+        let v4 = 2.0 * &v3; // 12
+        let v5 = 3.0 * &v3; // 18
+        let v6 = &v4 * &v5; // 216
 
-        let order = WrappedValue::topological_sort(&v6);
+        let order = Value::topological_sort(&v6);
         let datas: Vec<f64> = order.iter().map(|x| x.data()).collect();
         assert_eq!(datas.len(), 8);
         assert_eq!(datas, vec![216.0, 18.0, 3.0, 12.0, 6.0, 1.0, 5.0, 2.0]);
@@ -285,15 +300,15 @@ mod tests {
 
     #[test]
     fn backward() {
-        let v1 = WrappedValue::from(5.0);
-        let v2 = WrappedValue::from(1.0);
-        let v3 = &v1 + &v2;       // 6
-        let v4 = 2.0 * &v3;       // 12
-        let v5 = 3.0 * &v3;       // 18
-        let mut v6 = &v4 * &v5;   // 216
+        let v1 = Value::from(5.0);
+        let v2 = Value::from(1.0);
+        let v3 = &v1 + &v2; // 6
+        let v4 = 2.0 * &v3; // 12
+        let v5 = 3.0 * &v3; // 18
+        let mut v6 = &v4 * &v5; // 216
 
         v6.backward();
-        assert_eq!(v1.value().grad, 12.0 * (v1.data() + v2.data()));
-        assert_eq!(v2.value().grad, 12.0 * (v1.data() + v2.data()));
+        assert_eq!(v1.grad(), 12.0 * (v1.data() + v2.data()));
+        assert_eq!(v2.grad(), 12.0 * (v1.data() + v2.data()));
     }
 }
