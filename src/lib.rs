@@ -111,7 +111,8 @@ impl WrappedValue {
 }
 
 
-#[macro_export]
+/// Macro to implement binary operation traits on `WrappedValue`s
+/// including `f64` expansion.
 macro_rules! binary_op {
     [ $trait:ident, $op_name:ident, $op:tt ] => {
         impl $trait for &WrappedValue {
@@ -156,97 +157,38 @@ macro_rules! binary_op {
             }
         }
     };
+
+    [ $trait:ident, $op_name:ident, $op:tt, $update_grad:expr ] => {
+        impl $trait for WrappedValue {
+            type Output = WrappedValue;
+        
+            fn $op_name(self, rhs: Self) -> Self::Output {
+                let v1 = self.clone();
+                let v2 = rhs.clone();
+                
+                let grad_fn = GradFn::new(stringify!($op_name), move |grad| {
+                    let (dv1, dv2) = $update_grad(grad, v1.data(), v2.data());
+                    v1.value_mut().grad += dv1;
+                    v2.value_mut().grad += dv2;
+                });
+                
+                let mut v = Value::new(self.data() $op rhs.data());
+                v.prev.push(self.clone());
+                v.prev.push(rhs.clone());
+                v.grad_fn = grad_fn;
+                
+                WrappedValue::new(v)
+            }
+        }
+
+        binary_op![$trait, $op_name, $op];
+    };
 }
 
-binary_op![Add, add, +];
-binary_op![Sub, sub, -];
-binary_op![Mul, mul, *];
-binary_op![Div, div, /];
-
-
-impl Add for WrappedValue {
-    type Output = WrappedValue;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        let v1 = self.clone();
-        let v2 = rhs.clone();
-        
-        let grad_fn = GradFn::new("add", move |grad| {
-            v1.value_mut().grad += grad;
-            v2.value_mut().grad += grad;
-        });
-        
-        let mut v = Value::new(self.data() + rhs.data());
-        v.prev.push(self.clone());
-        v.prev.push(rhs.clone());
-        v.grad_fn = grad_fn;
-        
-        WrappedValue::new(v)
-    }
-}
-
-impl Sub for WrappedValue {
-    type Output = WrappedValue;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        let v1 = self.clone();
-        let v2 = rhs.clone();
-        
-        let grad_fn = GradFn::new("sub", move |grad| {
-            v1.value_mut().grad += grad;
-            v2.value_mut().grad += grad * -1.0;
-        });
-        
-        let mut v = Value::new(self.data() - rhs.data());
-        v.prev.push(self.clone());
-        v.prev.push(rhs.clone());
-        v.grad_fn = grad_fn;
-        
-        WrappedValue::new(v)
-    }
-}
-
-impl Mul for WrappedValue {
-    type Output = WrappedValue;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        let v1 = self.clone();
-        let v2 = rhs.clone();
-        
-        let grad_fn = GradFn::new("mul", move |grad| {
-            v1.value_mut().grad += grad * v2.data();
-            v2.value_mut().grad += grad * v1.data();
-        });
-        
-        let mut v = Value::new(self.data() * rhs.data());
-        v.prev.push(self.clone());
-        v.prev.push(rhs.clone());
-        v.grad_fn = grad_fn;
-        
-        WrappedValue::new(v)
-    }
-}
-
-impl Div for WrappedValue {
-    type Output = WrappedValue;
-
-    fn div(self, rhs: Self) -> Self::Output {
-        let v1 = self.clone();
-        let v2 = rhs.clone();
-        
-        let grad_fn = GradFn::new("div", move |grad| {
-            v1.value_mut().grad += grad * 1.0 / v2.data();
-            v2.value_mut().grad += grad * -1.0 * v1.data() / (v2.data() * v2.data());
-        });
-        
-        let mut v = Value::new(self.data() / rhs.data());
-        v.prev.push(self.clone());
-        v.prev.push(rhs.clone());
-        v.grad_fn = grad_fn;
-        
-        WrappedValue::new(v)
-    }
-}
+binary_op![Add, add, +, |grad, _a,_b| { (grad, grad) }];
+binary_op![Sub, sub, -, |grad, _a,_b| { (grad, grad * -1.0) }];
+binary_op![Mul, mul, *, |grad, a, b| { (grad * b, grad * a) }];
+binary_op![Div, div, /, |grad, a, b| { (grad * 1.0 / b, grad * -1.0 * a / (b * b)) }];
 
 
 #[cfg(test)]
