@@ -1,5 +1,5 @@
 use ndarray::prelude::*;
-use ndarray_rand::{rand_distr::{Normal, num_traits}, RandomExt};
+use ndarray_rand::{rand_distr::{Normal, num_traits::{self, FromPrimitive}}, RandomExt};
 
 use crate::engine::Value;
 
@@ -15,6 +15,17 @@ impl num_traits::Zero for Value {
     }
 }
 
+// N.B. Required for array.mean
+impl FromPrimitive for Value {
+    fn from_i64(n: i64) -> Option<Self> {
+        Some(Value::from(n as f64))
+    }
+
+    fn from_u64(n: u64) -> Option<Self> {
+        Some(Value::from(n as f64))
+    }
+}
+
 /// Matrix multiply rectangular Value arrays.
 fn dot(a: &Array2<Value>, b: &Array2<Value>) -> Array2<Value> {
     let (n1, _m1) = a.dim();
@@ -26,7 +37,16 @@ fn dot(a: &Array2<Value>, b: &Array2<Value>) -> Array2<Value> {
     })
 }
 
-trait Module {
+pub fn mse<D>(y_pred: &Array<Value, D>, y_true: &Array<Value, D>) -> Value 
+where
+    D: Dimension
+{
+    let out = y_pred - y_true;
+    let out = out.mapv(|x| &x * &x);
+    out.mean().unwrap()
+}
+
+pub trait Module {
     fn parameters(&self) -> Vec<&Value>;
 
     fn forward(&self, x: &Array2<Value>) -> Array2<Value>;
@@ -38,13 +58,13 @@ trait Module {
     }
 }
 
-struct Linear {
-    weights: Array2<Value>,
-    biases: Option<Array1<Value>>,
+pub struct Linear {
+    pub weights: Array2<Value>,
+    pub biases: Option<Array1<Value>>,
 }
 
 impl Linear {
-    fn new(in_dim: usize, out_dim: usize, include_bias: bool) -> Linear {
+    pub fn new(in_dim: usize, out_dim: usize, include_bias: bool) -> Linear {
         let weights = Array2::random((in_dim, out_dim), Normal::new(0.0, 1.0).unwrap());
         let biases = if include_bias {
             Some(Array::zeros(out_dim))
@@ -128,5 +148,27 @@ mod tests {
         let v = Value::from_ndarray(&a);
         let out = lin.forward(&v);
         assert_eq!(out.dim(), (2, 2));
+    }
+
+    #[test]
+    fn test_mse() {
+        let a = array![1.0, 2.0, 3.0];
+        let va = Value::from_ndarray(&a);
+        let b = array![1.0, 1.0, 2.0];
+        let vb = Value::from_ndarray(&b);
+        let mut vmse = mse(&va, &vb);
+        assert_eq!(
+            vmse.data(),
+            (&a - &b).mapv(|x| x*x).mean().unwrap()
+        );
+
+        // Check gradient computation (dLoss w.r.t. da)
+        vmse.backward();
+        for (i, vai) in va.iter().enumerate() {
+            assert_eq!(
+                vai.grad(), 
+                1.0 / (a.len() as f64) * 2.0 * (&a[i] - &b[i])
+            );
+        }
     }
 }
