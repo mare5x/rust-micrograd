@@ -7,6 +7,8 @@ use std::{
     sync::atomic::AtomicUsize,
 };
 
+use ndarray_rand::rand_distr::num_traits;
+
 // TODO don't do this
 // N.B. This was only necessary for topological sorting...
 static VAL_CNT: AtomicUsize = AtomicUsize::new(0);
@@ -132,6 +134,35 @@ impl Value {
         for v in order.iter() {
             v.inner_mut().backward();
         }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Value({}, grad={})", self.data(), self.grad())
+    }
+}
+
+// Implement some traits for use with ndarray.
+// This is for array.sum_axis
+impl num_traits::Zero for Value {
+    fn zero() -> Self {
+        Value::from(0.0)
+    }
+
+    fn is_zero(&self) -> bool {
+        self.data().is_zero()
+    }
+}
+
+// N.B. Required for array.mean
+impl num_traits::FromPrimitive for Value {
+    fn from_i64(n: i64) -> Option<Self> {
+        Some(Value::from(n as f64))
+    }
+
+    fn from_u64(n: u64) -> Option<Self> {
+        Some(Value::from(n as f64))
     }
 }
 

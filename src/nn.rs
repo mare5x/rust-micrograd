@@ -1,30 +1,7 @@
-use ndarray::prelude::*;
-use ndarray_rand::{rand_distr::{Normal, num_traits::{self, FromPrimitive}}, RandomExt};
+pub use ndarray::prelude::*;
+use ndarray_rand::{rand_distr::Normal, RandomExt};
 
 use crate::engine::Value;
-
-// Implement some traits for use with ndarray.
-// This is for array.sum_axis
-impl num_traits::Zero for Value {
-    fn zero() -> Self {
-        Value::from(0.0)
-    }
-
-    fn is_zero(&self) -> bool {
-        self.data().is_zero()
-    }
-}
-
-// N.B. Required for array.mean
-impl FromPrimitive for Value {
-    fn from_i64(n: i64) -> Option<Self> {
-        Some(Value::from(n as f64))
-    }
-
-    fn from_u64(n: u64) -> Option<Self> {
-        Some(Value::from(n as f64))
-    }
-}
 
 /// Matrix multiply rectangular Value arrays.
 fn dot(a: &Array2<Value>, b: &Array2<Value>) -> Array2<Value> {
