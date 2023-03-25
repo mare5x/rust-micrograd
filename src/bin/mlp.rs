@@ -17,9 +17,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let vx = Value::from_ndarray(&csv.x);
     let vy = Value::from_ndarray(&csv.y);
 
-    let model = nn::Linear::new(vx.shape()[1], vy.shape()[1], true);
+    let model = nn::MLP::new(&[vx.shape()[1], 8, vy.shape()[1]], nn::ActivationFunc::RELU);
 
-    let lr = 0.1;
+    let lr = 0.01;
     for _it in 0..50 {
         let y_pred = model.forward(&vx);
         let mut loss = nn::mse(&y_pred, &vy);
@@ -31,18 +31,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             param.inner_mut().data -= lr * param.grad();
         }
     }
-
-    println!(
-        "w={:?}",
-        model.weights.iter().map(|x| x.data()).collect::<Vec<_>>()
-    );
-    println!(
-        "b={:?}",
-        model.biases.map_or(vec![0.0], |b| b
-            .iter()
-            .map(|x| x.data())
-            .collect::<Vec<_>>())
-    );
 
     Ok(())
 }

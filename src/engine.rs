@@ -135,6 +135,22 @@ impl Value {
             v.inner_mut().backward();
         }
     }
+
+    pub fn relu(&self) -> Value {
+        let v = self.clone();
+        let x = self.data();
+
+        let grad_fn = GradFn::new("relu", move |grad| {
+            let dv = if x > 0.0 { 1.0 } else { 0.0 };
+            v.inner_mut().grad += grad * dv;
+        });
+
+        let mut v = Data::new(if x > 0.0 { x } else { 0.0 });
+        v.prev.push(self.clone());
+        v.grad_fn = grad_fn;
+
+        Value::new(v)
+    }
 }
 
 impl fmt::Display for Value {
@@ -348,5 +364,15 @@ mod tests {
         v6.backward();
         assert_eq!(v1.grad(), 12.0 * (v1.data() + v2.data()));
         assert_eq!(v2.grad(), 12.0 * (v1.data() + v2.data()));
+    }
+
+    #[test]
+    fn relu() {
+        let v1 = Value::from(5.0);
+        let mut v2 = v1.relu();
+        assert_eq!(v2.data(), v1.data());
+
+        v2.backward();
+        assert_eq!(v1.grad(), 1.0);
     }
 }

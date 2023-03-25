@@ -14,9 +14,9 @@ fn dot(a: &Array2<Value>, b: &Array2<Value>) -> Array2<Value> {
     })
 }
 
-pub fn mse<D>(y_pred: &Array<Value, D>, y_true: &Array<Value, D>) -> Value 
+pub fn mse<D>(y_pred: &Array<Value, D>, y_true: &Array<Value, D>) -> Value
 where
-    D: Dimension
+    D: Dimension,
 {
     let out = y_pred - y_true;
     let out = out.mapv(|x| &x * &x);
@@ -74,6 +74,49 @@ impl Module for Linear {
     }
 }
 
+pub enum ActivationFunc {
+    RELU,
+}
+
+pub struct MLP {
+    pub layers: Vec<Linear>,
+    pub act: ActivationFunc,
+}
+
+impl MLP {
+    pub fn new(sizes: &[usize], act: ActivationFunc) -> MLP {
+        assert!(sizes.len() >= 2);
+        let mut layers = Vec::new();
+        for i in 0..sizes.len() - 1 {
+            let bias = i < sizes.len() - 2;
+            let layer = Linear::new(sizes[i], sizes[i + 1], bias);
+            layers.push(layer);
+        }
+        MLP { layers, act }
+    }
+}
+
+impl Module for MLP {
+    fn parameters(&self) -> Vec<&Value> {
+        self.layers
+            .iter()
+            .map(|layer| layer.parameters())
+            .flatten()
+            .collect()
+    }
+
+    fn forward(&self, x: &Array2<Value>) -> Array2<Value> {
+        let mut x = x.clone();
+        for layer in self.layers.iter() {
+            x = layer.forward(&x);
+            x = match &self.act {
+                ActivationFunc::RELU => x.mapv(|x| x.relu()),
+            }
+        }
+        x
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,9 +154,7 @@ mod tests {
         let v = Value::from_ndarray(&a);
         let v_t = Value::from_ndarray(&a.t().to_owned());
         let v_dot = dot(&v_t, &v);
-        assert_eq!(
-            v_dot.map(|x| x.data()),
-            a.t().dot(&a));
+        assert_eq!(v_dot.map(|x| x.data()), a.t().dot(&a));
     }
 
     #[test]
@@ -134,18 +175,24 @@ mod tests {
         let b = array![1.0, 1.0, 2.0];
         let vb = Value::from_ndarray(&b);
         let mut vmse = mse(&va, &vb);
-        assert_eq!(
-            vmse.data(),
-            (&a - &b).mapv(|x| x*x).mean().unwrap()
-        );
+        assert_eq!(vmse.data(), (&a - &b).mapv(|x| x * x).mean().unwrap());
 
         // Check gradient computation (dLoss w.r.t. da)
         vmse.backward();
         for (i, vai) in va.iter().enumerate() {
-            assert_eq!(
-                vai.grad(), 
-                1.0 / (a.len() as f64) * 2.0 * (&a[i] - &b[i])
-            );
+            assert_eq!(vai.grad(), 1.0 / (a.len() as f64) * 2.0 * (&a[i] - &b[i]));
         }
+    }
+
+    #[test]
+    fn mlp() {
+        let mlp = MLP::new(&[3, 2, 1], ActivationFunc::RELU);
+        assert_eq!(mlp.layers.len(), 2);
+        assert_eq!(mlp.parameters().len(), 3 * 2 + 2 + 2 * 1);
+
+        let a = array![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
+        let v = Value::from_ndarray(&a);
+        let out = mlp.forward(&v);
+        assert_eq!(out.dim(), (2, 1));
     }
 }
