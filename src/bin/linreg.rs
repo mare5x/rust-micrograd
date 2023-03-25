@@ -1,47 +1,72 @@
-use ndarray::array;
-use rust_micrograd::{nn::{self, Module}, Value};
+use std::{error::Error, path::Path};
 
-fn main() {
-    let x = array![
-        0.13312549122349107,
-        0.39185329092401716,
-        0.3173269343374667,
-        0.5854101935932261,
-        0.6048632706555529,
-        0.7988494681347201,
-        0.8290469506480111
-    ];
-    let n = x.dim();
-    let x = x.into_shape((n, 1)).unwrap();
-    let vx = Value::from_ndarray(&x);
+use csv::Reader;
+use ndarray::prelude::*;
+use rust_micrograd::{
+    nn::{self, Module},
+    Value,
+};
 
-    let y = array![
-        0.2271480569496033,
-        0.29348561939561973,
-        0.5046767515252639,
-        0.4950156627242872,
-        0.6529935498747048,
-        0.691360626363368,
-        0.8684963618384874,
-    ];
-    let y = y.into_shape((n, 1)).unwrap();
-    let vy = Value::from_ndarray(&y);
+pub struct CsvFormat {
+    pub x: Array2<f64>,
+    pub y: Array2<f64>,
+}
 
-    let lin = nn::Linear::new(1, 1, true);
-    let lr = 0.5;
+pub fn read_csv(path: &Path) -> Result<CsvFormat, Box<dyn Error>> {
+    let mut reader = Reader::from_path(path)?;
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for record in reader.records() {
+        let record = record?;
+        let row: Vec<f64> = record
+            .iter()
+            .filter_map(|x| x.parse::<f64>().ok())
+            .collect();
+        let (y, x) = row.split_last().unwrap();
+        xs.push(x.to_vec());
+        ys.push(*y);
+    }
 
-    for _it in 0..100 {
-        lin.zero_grad();
+    let xs = Array2::from_shape_fn((xs.len(), xs[0].len()), |(i, j)| xs[i][j]);
+    let ys = Array2::from_shape_vec((ys.len(), 1), ys)?;
+
+    Ok(CsvFormat { x: xs, y: ys })
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut csv = read_csv(Path::new("./examples/housing.csv"))?;
+    let mu = csv.x.mean_axis(Axis(0)).unwrap();
+    let sigma = csv.x.std_axis(Axis(0), 0.0);
+    csv.x = (&csv.x - &mu) / &sigma;
+
+    let vx = Value::from_ndarray(&csv.x);
+    let vy = Value::from_ndarray(&csv.y);
+
+    let lin = nn::Linear::new(vx.shape()[1], vy.shape()[1], true);
+    let lr = 0.1;
+    for _it in 0..50 {
         let y_pred = lin.forward(&vx);
         let mut loss = nn::mse(&y_pred, &vy);
-        loss.backward();
         println!("Loss: {}", loss.data());
 
+        lin.zero_grad();
+        loss.backward();
         for param in lin.parameters() {
             param.inner_mut().data -= lr * param.grad();
         }
     }
 
-    println!("w={:?}", lin.weights.iter().map(|x| x.data()).collect::<Vec<_>>());
-    println!("b={:?}", lin.biases.map_or(vec![0.0], |b| b.iter().map(|x| x.data()).collect::<Vec<_>>()));
+    println!(
+        "w={:?}",
+        lin.weights.iter().map(|x| x.data()).collect::<Vec<_>>()
+    );
+    println!(
+        "b={:?}",
+        lin.biases.map_or(vec![0.0], |b| b
+            .iter()
+            .map(|x| x.data())
+            .collect::<Vec<_>>())
+    );
+
+    Ok(())
 }

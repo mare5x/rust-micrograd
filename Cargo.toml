@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 ndarray = "0.15.6"
 ndarray-rand = "0.14"
+csv = "1.2"
