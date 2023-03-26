@@ -1,6 +1,6 @@
 mod utils;
 
-use std::{error::Error, path::Path};
+use std::{error::Error, fs, path::Path};
 
 use ndarray::prelude::*;
 use rust_micrograd::{
@@ -31,6 +31,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             param.inner_mut().data -= lr * param.grad();
         }
     }
+
+    // Write a "small" computation graph example to graphviz dot format.
+    let y_pred = model.forward(&vx.slice_move(s![0..3, ..]));
+    let y_true = vy.slice_move(s![0..3, ..]);
+    let mut loss = nn::mse(&y_pred, &y_true);
+    loss.backward();
+    fs::write("./mlp.dot", loss.to_graphviz())?;
 
     Ok(())
 }

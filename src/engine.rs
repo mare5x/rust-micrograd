@@ -1,6 +1,6 @@
 use std::{
     cell::{Ref, RefCell, RefMut},
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt,
     ops::{Add, Div, Mul, Sub},
     rc::Rc,
@@ -33,7 +33,7 @@ impl GradFn {
     }
 
     fn empty() -> GradFn {
-        Self::new("None", |_| ())
+        Self::new(" ", |_| ())
     }
 
     fn call(&mut self, grad: f64) {
@@ -86,6 +86,42 @@ impl Value {
         arr: &ndarray::Array<f64, D>,
     ) -> ndarray::Array<Value, D> {
         arr.map(|x| Self::from(*x))
+    }
+
+    /// Create a GraphViz DOT format string representation of the computation graph.
+    pub fn to_graphviz(&self) -> String {
+        let mut gradfn_colors = HashMap::new();
+        gradfn_colors.insert("add", 1);
+        gradfn_colors.insert("sub", 1);
+        gradfn_colors.insert("mul", 2);
+        gradfn_colors.insert("div", 2);
+        gradfn_colors.insert("relu", 3);
+
+        fn inner(node: &Value, colors: &HashMap<&str, i32>) -> String {
+            let id = node.inner().id;
+            let mut s = format!(
+                "{} [label=\"{{{} | {:.2} | {:.2}}}\", color={}];\n",
+                id,
+                node.inner().grad_fn.name,
+                node.data(),
+                node.grad(),
+                colors
+                    .get(&node.inner().grad_fn.name.as_str())
+                    .unwrap_or(&0)
+            );
+            for prev in node.inner().prev.iter() {
+                s.push_str(&inner(&prev, colors));
+                s.push_str(&format!("{} -- {};\n", id, prev.inner().id));
+            }
+            s
+        }
+
+        let mut s = format!("strict graph {{\n");
+        s.push_str("rankdir=RL;\n");
+        s.push_str("node [shape=record,colorscheme=set28];\n");
+        s.push_str(&inner(&self, &gradfn_colors));
+        s.push_str("}\n");
+        s
     }
 
     pub fn inner(&self) -> Ref<Data> {
@@ -374,5 +410,19 @@ mod tests {
 
         v2.backward();
         assert_eq!(v1.grad(), 1.0);
+    }
+
+    #[test]
+    fn to_graphviz() {
+        let v1 = Value::from(5.0);
+        let mut v6 = &v1 * &v1;
+        // let v2 = Value::from(1.0);
+        // let v3 = &v1 + &v2; // 6
+        // let v4 = 2.0 * &v3; // 12
+        // let v5 = 3.0 * &v3; // 18
+        // let mut v6 = &v4 * &v5; // 216
+        v6.backward();
+
+        println!("{}", v6.to_graphviz());
     }
 }
