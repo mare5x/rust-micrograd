@@ -17,7 +17,7 @@ static VAL_CNT: AtomicUsize = AtomicUsize::new(0);
 /// The `name` field is only for debugging convenience.
 pub struct GradFn {
     name: String,
-    grad_fn: Box<dyn FnMut(ArrayD<f64>) -> ()>,
+    grad_fn: Box<dyn FnMut(Array2<f64>) -> ()>,
 }
 
 impl fmt::Debug for GradFn {
@@ -27,7 +27,7 @@ impl fmt::Debug for GradFn {
 }
 
 impl GradFn {
-    fn new(name: &str, grad_fn: impl FnMut(ArrayD<f64>) -> () + 'static) -> Self {
+    fn new(name: &str, grad_fn: impl FnMut(Array2<f64>) -> () + 'static) -> Self {
         Self {
             name: String::from(name),
             grad_fn: Box::new(grad_fn),
@@ -41,15 +41,15 @@ impl GradFn {
 
 #[derive(Debug)]
 pub struct TensorData {
-    pub data: ArrayD<f64>,
-    pub grad: ArrayD<f64>,
+    pub data: Array2<f64>,
+    pub grad: Array2<f64>,
     prev: Vec<Tensor>,
     grad_fn: GradFn,
     id: usize, // Unique id; for sorting purposes.
 }
 
 impl TensorData {
-    fn new(data: ArrayD<f64>) -> TensorData {
+    fn new(data: Array2<f64>) -> TensorData {
         let id = VAL_CNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let dim = data.raw_dim();
         TensorData {
@@ -76,12 +76,12 @@ impl Tensor {
         Tensor(Rc::new(RefCell::new(value)))
     }
 
-    pub fn from<D: Dimension>(arr: Array<f64, D>) -> Tensor {
-        Tensor::new(TensorData::new(arr.into_dyn()))
+    pub fn from(arr: Array2<f64>) -> Tensor {
+        Tensor::new(TensorData::new(arr))
     }
 
     pub fn from_f64(data: f64) -> Tensor {
-        Tensor::new(TensorData::new(arr0(data).into_dyn()))
+        Tensor::new(TensorData::new(arr2(&[[data]])))
     }
 
     /// Create a GraphViz DOT format string representation of the computation graph.
@@ -129,12 +129,16 @@ impl Tensor {
         (*self.0).borrow_mut()
     }
 
-    pub fn data(&self) -> impl Deref<Target = ArrayD<f64>> + '_ {
+    pub fn data(&self) -> impl Deref<Target = Array2<f64>> + '_ {
         Ref::map((*self.0).borrow(), |mi| &mi.data)
     }
 
-    pub fn grad(&self) -> impl Deref<Target = ArrayD<f64>> + '_ {
+    pub fn grad(&self) -> impl Deref<Target = Array2<f64>> + '_ {
         Ref::map((*self.0).borrow(), |mi| &mi.grad)
+    }
+
+    pub fn item(&self) -> f64 {
+        self.data()[[0, 0]]
     }
 
     fn topological_sort(root: &Tensor) -> Vec<Tensor> {
@@ -190,7 +194,7 @@ impl Tensor {
         let grad_fn = GradFn::new("sum", move |grad| {
             v.inner_mut().grad.scaled_add(1.0, &grad);
         });
-        let mut v = TensorData::new(arr0(self.data().sum()).into_dyn());
+        let mut v = TensorData::new(arr2(&[[self.data().sum()]]));
         v.prev.push(self.clone());
         v.grad_fn = grad_fn;
 
@@ -202,11 +206,25 @@ impl Tensor {
         (1.0 / n as f64) * self.sum()
     }
 
-    // pub fn dot(&self, rhs: &Tensor) -> Tensor {
-    //     let lhs_x = self.data();
-    //     let rhs_x = self.data();
-    //     lhs_x as Array2<f64>;
-    // }
+    pub fn dot(&self, rhs: &Tensor) -> Tensor {
+        let lhs = self.clone();
+        let rhs1 = rhs.clone();
+
+        let grad_fn = GradFn::new("matmul", move |grad| {
+            let da = grad.dot(&rhs1.data().t());
+            let db = lhs.data().t().dot(&grad);
+            lhs.inner_mut().grad.scaled_add(1.0, &da);
+            rhs1.inner_mut().grad.scaled_add(1.0, &db);
+        });
+
+        let c = self.data().dot(rhs.data().deref());
+        let mut v = TensorData::new(c);
+        v.prev.push(self.clone());
+        v.prev.push(rhs.clone());
+        v.grad_fn = grad_fn;
+
+        Tensor::new(v)
+    }
 }
 
 /// Macro to implement binary operation traits on `Tensor`s
@@ -298,7 +316,7 @@ mod tests {
 
     #[test]
     fn make_tensor() {
-        let v = TensorData::new(arr0(5.0).into_dyn());
+        let v = TensorData::new(arr2(&[[5.0]]));
         assert_eq!(flat_vec(&v.data), vec![5.0]);
     }
 
@@ -315,10 +333,10 @@ mod tests {
         assert_eq!(v1.inner().grad, v.grad);
         assert_eq!(v2.grad().deref(), v.grad);
 
-        let v1 = Tensor::from(array![1.0, 2.0]);
-        let v2 = Tensor::from(array![3.0, 4.0]);
+        let v1 = Tensor::from(array![[1.0, 2.0]]);
+        let v2 = Tensor::from(array![[3.0, 4.0]]);
         let mut v = &v1 + &v2;
-        assert_eq!(v.data().deref(), array![4.0, 6.0].into_dyn());
+        assert_eq!(v.data().deref(), array![[4.0, 6.0]]);
         v.backward();
         assert_eq!(v1.inner().grad, v.grad().deref());
         assert_eq!(v2.grad().deref(), v.grad().deref());
@@ -335,8 +353,8 @@ mod tests {
         assert_eq!(flat_vec(&v1.grad()), vec![2.0]);
         assert_eq!(flat_vec(&v2.grad()), vec![5.0]);
 
-        let v1 = Tensor::from(array![2.0, 3.0]);
-        let v2 = Tensor::from(array![4.0, 6.0]);
+        let v1 = Tensor::from(array![[2.0, 3.0]]);
+        let v2 = Tensor::from(array![[4.0, 6.0]]);
         let mut v = &v1 * &v2;
         assert_eq!(flat_vec(&v.data()), vec![8.0, 18.0]);
         v.backward();
@@ -354,9 +372,10 @@ mod tests {
         v.backward();
         assert_eq!(flat_vec(&v1.grad()), vec![2.0]);
 
-        let v1 = Tensor::from(array![2.0, 3.0]);
+        let v1 = Tensor::from(array![[2.0, 3.0]]);
         let mut v = 2.0 * &v1;
         assert_eq!(flat_vec(&v.data()), vec![4.0, 6.0]);
+        // TODO
         // v.backward();
         // assert_eq!(flat_vec(&v1.grad()), vec![2.0]);
     }
@@ -372,8 +391,8 @@ mod tests {
 
     #[test]
     fn expr_2d() {
-        let v1 = Tensor::from(array![5.0, 6.0]);
-        let v2 = Tensor::from(array![-3.0, -2.0]);
+        let v1 = Tensor::from(array![[5.0, 6.0]]);
+        let v2 = Tensor::from(array![[-3.0, -2.0]]);
         let v3 = &v1 + &v2;
         let v4 = 2.0 * &v3;
         let v5 = 3.0 * &v3;
@@ -431,7 +450,7 @@ mod tests {
         v2.backward();
         assert_eq!(flat_vec(&v1.grad()), vec![1.0]);
 
-        let v1 = Tensor::from(array![-2.0, 2.0]);
+        let v1 = Tensor::from(array![[-2.0, 2.0]]);
         let mut v2 = v1.relu();
         assert_eq!(flat_vec(&v2.data()), vec![0.0, 2.0]);
         v2.backward();
@@ -457,10 +476,21 @@ mod tests {
     }
 
     #[test]
+    fn dot() {
+        let v1 = Tensor::from(array![[1.0, 1.0], [2.0, 3.0]]);
+        let v2 = Tensor::from(array![[0.0, 1.0], [1.0, 0.0]]);
+        let mut v = v1.dot(&v2);
+        assert!(v.data().deref() == array![[1.0, 1.0], [3.0, 2.0]]);
+        v.backward();
+        assert!(v1.grad().deref() == array![[1.0, 1.0], [1.0, 1.0]]);
+        assert!(v2.grad().deref() == array![[3.0, 3.0], [4.0, 4.0]]);
+    }
+
+    #[test]
     fn to_graphviz() {
-        let v1 = Tensor::from(array![5.0, 6.0]);
+        let v1 = Tensor::from(array![[5.0, 6.0]]);
         // let mut v6 = &v1 * &v1;
-        let v2 = Tensor::from(array![-3.0, -2.0]);
+        let v2 = Tensor::from(array![[-3.0, -2.0]]);
         let v3 = &v1 + &v2;
         let v4 = 2.0 * &v3;
         let v5 = 3.0 * &v3;
