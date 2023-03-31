@@ -236,7 +236,7 @@ impl Tensor {
     }
 }
 
-/// Macro to implement binary operation traits on `Tensor`s
+/// Macro to implement binary element-wise operations on `Tensor`s
 /// including `f64` expansion.
 macro_rules! binary_op {
     [ $trait:ident, $op_name:ident, $op:tt ] => {
@@ -296,12 +296,17 @@ macro_rules! binary_op {
                     // If an operand is a scalar, we have to sum the individual derivative contributions together.
                     // Otherwise, the resulting gradient shape wouldn't be correct.
                     // E.g. d(2*[a,b,c])/d(2) = [a,b,c] -> a+b+c
+                    // Same story for vector broadcasting.
                     let dv1 = match v1.grad().dim() {
                         (1, 1) => arr2(&[[dv1.sum()]]),
+                        (1, n) => dv1.sum_axis(Axis(0)).into_shape((1, n)).unwrap(),
+                        (n, 1) => dv1.sum_axis(Axis(1)).into_shape((n, 1)).unwrap(),
                         (_, _) => dv1,
                     };
                     let dv2 = match v2.grad().dim() {
                         (1, 1) => arr2(&[[dv2.sum()]]),
+                        (1, n) => dv2.sum_axis(Axis(0)).into_shape((1, n)).unwrap(),
+                        (n, 1) => dv2.sum_axis(Axis(1)).into_shape((n, 1)).unwrap(),
                         (_, _) => dv2,
                     };
                     v1.grad_mut().scaled_add(1.0, &dv1);
