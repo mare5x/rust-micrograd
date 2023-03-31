@@ -33,14 +33,6 @@ impl GradFn {
             grad_fn: Box::new(grad_fn),
         }
     }
-
-    fn empty() -> GradFn {
-        Self::new(" ", |_| ())
-    }
-
-    fn call(&mut self, grad: f64) {
-        (self.grad_fn)(grad)
-    }
 }
 
 /// Underlying `Value` data holding single `f64` values for the data and gradient.
@@ -52,7 +44,7 @@ pub struct ValueData {
     pub data: f64,
     pub grad: f64,
     prev: Vec<Value>,
-    grad_fn: GradFn,
+    grad_fn: Option<GradFn>,
     id: usize, // Unique id; for sorting purposes.
 }
 
@@ -63,7 +55,7 @@ impl ValueData {
             data,
             grad: 0.0,
             prev: vec![],
-            grad_fn: GradFn::empty(),
+            grad_fn: None,
             id,
         }
     }
@@ -71,7 +63,9 @@ impl ValueData {
     /// Initiate local backward pass computation, updating the `grad`
     /// of the children in the node's computation graph.
     fn backward(&mut self) {
-        self.grad_fn.call(self.grad)
+        if let Some(grad_fn) = &mut self.grad_fn {
+            (grad_fn.grad_fn)(self.grad)
+        }
     }
 }
 
@@ -124,14 +118,18 @@ impl Value {
         fn inner(node: &Value, colors: &HashMap<&str, i32>) -> String {
             let id = node.inner().id;
             let mut s = format!(
-                "{} [label=\"{{{} | {:.2} | {:.2}}}\", color={}];\n",
+                "{} [label=\"{{{} {:.2} | {:.2}}}\", color={}];\n",
                 id,
-                node.inner().grad_fn.name,
+                node.inner()
+                    .grad_fn
+                    .as_ref()
+                    .map_or(String::from(""), |g| format!("{} | ", g.name)),
                 node.data(),
                 node.grad(),
-                colors
-                    .get(&node.inner().grad_fn.name.as_str())
-                    .unwrap_or(&0)
+                node.inner()
+                    .grad_fn
+                    .as_ref()
+                    .map_or(0, |g| *colors.get(&g.name.as_str()).unwrap_or(&0)),
             );
             for prev in node.inner().prev.iter() {
                 s.push_str(&inner(&prev, colors));
@@ -194,7 +192,7 @@ impl Value {
 
         let mut v = ValueData::new(if x > 0.0 { x } else { 0.0 });
         v.prev.push(self.clone());
-        v.grad_fn = grad_fn;
+        v.grad_fn = Some(grad_fn);
 
         Value::new(v)
     }
@@ -293,7 +291,7 @@ macro_rules! binary_op {
                 let mut v = ValueData::new(self.data() $op rhs.data());
                 v.prev.push(self.clone());
                 v.prev.push(rhs.clone());
-                v.grad_fn = grad_fn;
+                v.grad_fn = Some(grad_fn);
 
                 Value::new(v)
             }
@@ -324,7 +322,7 @@ mod tests {
         let v2 = Value::from(1.0);
         let v = &v1 + &v2;
         assert_eq!(v.data(), 6.0);
-        assert_eq!(v.inner().grad_fn.name, "add");
+        assert_eq!(v.inner().grad_fn.as_ref().map_or("", |g| &g.name), "add");
 
         {
             let val = v.inner();
@@ -345,7 +343,7 @@ mod tests {
         let v2 = Value::from(2.0);
         let v = &v1 * &v2;
         assert_eq!(v.data(), 10.0);
-        assert_eq!(v.inner().grad_fn.name, "mul");
+        assert_eq!(v.inner().grad_fn.as_ref().map_or("", |g| &g.name), "mul");
         let mut v = v.inner_mut();
         v.grad = 1.0;
         v.backward();
@@ -358,7 +356,7 @@ mod tests {
         let v1 = Value::from(5.0);
         let v = 2.0 * &v1;
         assert_eq!(v.data(), 10.0);
-        assert_eq!(v.inner().grad_fn.name, "mul");
+        assert_eq!(v.inner().grad_fn.as_ref().map_or("", |g| &g.name), "mul");
         assert_eq!(v.inner().prev.len(), 2);
         let mut v = v.inner_mut();
         v.grad = 1.0;
@@ -421,6 +419,18 @@ mod tests {
 
         v2.backward();
         assert_eq!(v1.grad(), 1.0);
+    }
+
+    #[test]
+    fn expr1() {
+        let v1 = Value::from(5.0);
+        let v2 = Value::from(1.0);
+        let v3 = &v1 + &v2;
+        let v4 = 2.0 * &v3;
+        let mut v5 = v4.relu();
+        v5.backward();
+        assert_eq!(v1.grad(), 2.0);
+        assert_eq!(v2.grad(), 2.0);
     }
 
     #[test]

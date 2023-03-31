@@ -33,10 +33,6 @@ impl GradFn {
             grad_fn: Box::new(grad_fn),
         }
     }
-
-    fn empty() -> GradFn {
-        Self::new(" ", |_| ())
-    }
 }
 
 /// Underlying `Tensor` data.
@@ -50,7 +46,7 @@ pub struct TensorData {
     pub data: Array2<f64>,
     pub grad: Array2<f64>,
     prev: Vec<Tensor>,
-    grad_fn: GradFn,
+    grad_fn: Option<GradFn>,
     id: usize, // Unique id; for sorting purposes.
 }
 
@@ -62,7 +58,7 @@ impl TensorData {
             data,
             grad: Array::zeros(dim),
             prev: vec![],
-            grad_fn: GradFn::empty(),
+            grad_fn: None,
             id,
         }
     }
@@ -70,7 +66,9 @@ impl TensorData {
     /// Initiate local backward pass computation, updating the `grad`
     /// of the children in the node's computation graph.
     fn backward(&mut self) {
-        (self.grad_fn.grad_fn)(&self.grad)
+        if let Some(grad_fn) = &mut self.grad_fn {
+            (grad_fn.grad_fn)(&self.grad)
+        }
     }
 }
 
@@ -135,15 +133,17 @@ impl Tensor {
         fn inner(node: &Tensor, colors: &HashMap<&str, i32>) -> String {
             let id = node.inner().id;
             let mut s = format!(
-                "{} [label=\"{{{} | {:?}}}\", color={}];\n",
+                "{} [label=\"{{{} {:?}}}\", color={}];\n",
                 id,
-                node.inner().grad_fn.name,
+                node.inner()
+                    .grad_fn
+                    .as_ref()
+                    .map_or(String::from(""), |g| format!("{} | ", g.name)),
                 node.data().shape(),
-                // node.data(),
-                // node.grad(),
-                colors
-                    .get(&node.inner().grad_fn.name.as_str())
-                    .unwrap_or(&0)
+                node.inner()
+                    .grad_fn
+                    .as_ref()
+                    .map_or(0, |g| *colors.get(&g.name.as_str()).unwrap_or(&0)),
             );
             for prev in node.inner().prev.iter() {
                 s.push_str(&inner(&prev, colors));
@@ -205,7 +205,7 @@ impl Tensor {
         let new = self.data().map(|x| if *x > 0.0 { *x } else { 0.0 });
         let mut v = TensorData::new(new);
         v.prev.push(self.clone());
-        v.grad_fn = grad_fn;
+        v.grad_fn = Some(grad_fn);
 
         Tensor::new(v)
     }
@@ -217,7 +217,7 @@ impl Tensor {
         });
         let mut v = TensorData::new(arr2(&[[self.data().sum()]]));
         v.prev.push(self.clone());
-        v.grad_fn = grad_fn;
+        v.grad_fn = Some(grad_fn);
 
         Tensor::new(v)
     }
@@ -242,7 +242,7 @@ impl Tensor {
         let mut v = TensorData::new(c);
         v.prev.push(self.clone());
         v.prev.push(rhs.clone());
-        v.grad_fn = grad_fn;
+        v.grad_fn = Some(grad_fn);
 
         Tensor::new(v)
     }
@@ -328,7 +328,7 @@ macro_rules! binary_op {
                 let mut v = TensorData::new(self.data().deref() $op rhs.data().deref());
                 v.prev.push(self.clone());
                 v.prev.push(rhs.clone());
-                v.grad_fn = grad_fn;
+                v.grad_fn = Some(grad_fn);
 
                 Tensor::new(v)
             }
@@ -365,7 +365,7 @@ mod tests {
         let v2 = Tensor::from_f64(1.0);
         let v = &v1 + &v2;
         assert_eq!(flat_vec(&v.data()), vec![6.0]);
-        assert_eq!(v.inner().grad_fn.name, "add");
+        assert_eq!(v.inner().grad_fn.as_ref().map_or("", |g| &g.name), "add");
 
         let mut v = v.inner_mut();
         v.backward();
@@ -387,7 +387,7 @@ mod tests {
         let v2 = Tensor::from_f64(2.0);
         let mut v = &v1 * &v2;
         assert_eq!(flat_vec(&v.data()), vec![10.0]);
-        assert_eq!(v.inner().grad_fn.name, "mul");
+        assert_eq!(v.inner().grad_fn.as_ref().map_or("", |g| &g.name), "mul");
         v.backward();
         assert_eq!(flat_vec(&v1.grad()), vec![2.0]);
         assert_eq!(flat_vec(&v2.grad()), vec![5.0]);
@@ -406,7 +406,7 @@ mod tests {
         let v1 = Tensor::from_f64(5.0);
         let mut v = 2.0 * &v1;
         assert_eq!(flat_vec(&v.data()), vec![10.0]);
-        assert_eq!(v.inner().grad_fn.name, "mul");
+        assert_eq!(v.inner().grad_fn.as_ref().map_or("", |g| &g.name), "mul");
         assert_eq!(v.inner().prev.len(), 2);
         v.backward();
         assert_eq!(flat_vec(&v1.grad()), vec![2.0]);
