@@ -94,10 +94,14 @@ impl Module for MLP {
 
     fn forward(&self, x: &Tensor) -> Tensor {
         let mut x = x.clone();
-        for layer in self.layers.iter() {
+        for (i, layer) in self.layers.iter().enumerate() {
             x = layer.forward(&x);
-            x = match &self.act {
-                ActivationFunc::RELU => x.relu(),
+
+            // Last layer without activation function
+            if i < self.layers.len() - 1 {
+                x = match &self.act {
+                    ActivationFunc::RELU => x.relu(),
+                }
             }
         }
         x

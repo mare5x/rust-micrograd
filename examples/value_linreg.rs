@@ -1,6 +1,6 @@
 mod utils;
 
-use std::{error::Error, fs, path::Path};
+use std::{error::Error, fs, path::Path, time::Instant};
 
 use ndarray::prelude::*;
 use rust_micrograd::{
@@ -20,6 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model = nn::Linear::new(vx.shape()[1], vy.shape()[1], true);
 
     let lr = 0.1;
+    let tic = Instant::now();
     for _it in 0..50 {
         let y_pred = model.forward(&vx);
         let mut loss = nn::mse(&y_pred, &vy);
@@ -31,6 +32,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             param.inner_mut().data -= lr * param.grad();
         }
     }
+    println!("Took {:?}", tic.elapsed());
 
     println!(
         "w={:?}",

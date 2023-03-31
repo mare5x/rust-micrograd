@@ -446,4 +446,15 @@ mod tests {
 
         println!("{}", v6.to_graphviz());
     }
+
+    #[test]
+    fn to_graphviz_2() {
+        let v1 = Value::from(5.0);
+        let v2 = Value::from(1.0);
+        let v3 = &v1 + &v2;
+        let v4 = 2.0 * &v3;
+        let mut v5 = v4.relu();
+        v5.backward();
+        println!("{}", v5.to_graphviz());
+    }
 }

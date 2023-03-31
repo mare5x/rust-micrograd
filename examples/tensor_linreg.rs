@@ -1,6 +1,6 @@
 mod utils;
 
-use std::{error::Error, fs, ops::Deref, path::Path};
+use std::{error::Error, fs, ops::Deref, path::Path, time::Instant};
 
 use ndarray::prelude::*;
 use rust_micrograd::{
@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let vy = Tensor::from(csv.y.clone());
 
     let lr = 0.1;
+    let tic = Instant::now();
     for _it in 0..50 {
         let y_pred = model.forward(&vx);
         let mut loss = nn::mse(&y_pred, &vy);
@@ -34,6 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             data.data.scaled_add(-lr, &data.grad);
         }
     }
+    println!("Took {:?}", tic.elapsed());
 
     println!("w={:?}", model.weights.data().deref());
     println!(
