@@ -13,6 +13,8 @@ use ndarray_rand::rand_distr::num_traits;
 // N.B. This was only necessary for topological sorting...
 static VAL_CNT: AtomicUsize = AtomicUsize::new(0);
 
+/// Holds a closure that backward propagates the gradient to the children nodes.
+/// The `name` field is only for debugging convenience.
 pub struct GradFn {
     name: String,
     grad_fn: Box<dyn FnMut(f64) -> ()>,
@@ -41,9 +43,12 @@ impl GradFn {
     }
 }
 
-// TODO multi-dimensional tensors
+/// Underlying `Value` data holding single `f64` values for the data and gradient.
+/// # Notes
+/// - This struct is wrapped into `Value` with `Rc<RefCell<_>>` because
+/// we are building a computation graph/tree.
 #[derive(Debug)]
-pub struct Data {
+pub struct ValueData {
     pub data: f64,
     pub grad: f64,
     prev: Vec<Value>,
@@ -51,10 +56,10 @@ pub struct Data {
     id: usize, // Unique id; for sorting purposes.
 }
 
-impl Data {
-    fn new(data: f64) -> Data {
+impl ValueData {
+    fn new(data: f64) -> ValueData {
         let id = VAL_CNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Data {
+        ValueData {
             data,
             grad: 0.0,
             prev: vec![],
@@ -70,22 +75,41 @@ impl Data {
     }
 }
 
+/// `ValueData` wrapper that builds a computation graph for gradient backpropagation.
+/// # Notes
+/// - `Value::Clone` is used to make a clone of the pointer to the underlying data.
 #[derive(Debug, Clone)]
-pub struct Value(Rc<RefCell<Data>>);
+pub struct Value(Rc<RefCell<ValueData>>);
 
 impl Value {
-    fn new(value: Data) -> Value {
+    fn new(value: ValueData) -> Value {
         Value(Rc::new(RefCell::new(value)))
     }
 
     pub fn from(data: f64) -> Value {
-        Value::new(Data::new(data))
+        Value::new(ValueData::new(data))
     }
 
     pub fn from_ndarray<D: ndarray::Dimension>(
         arr: &ndarray::Array<f64, D>,
     ) -> ndarray::Array<Value, D> {
         arr.map(|x| Self::from(*x))
+    }
+
+    pub fn inner(&self) -> Ref<ValueData> {
+        (*self.0).borrow()
+    }
+
+    pub fn inner_mut(&self) -> RefMut<ValueData> {
+        (*self.0).borrow_mut()
+    }
+
+    pub fn data(&self) -> f64 {
+        (*self.0).borrow().data
+    }
+
+    pub fn grad(&self) -> f64 {
+        (*self.0).borrow().grad
     }
 
     /// Create a GraphViz DOT format string representation of the computation graph.
@@ -124,22 +148,6 @@ impl Value {
         s
     }
 
-    pub fn inner(&self) -> Ref<Data> {
-        (*self.0).borrow()
-    }
-
-    pub fn inner_mut(&self) -> RefMut<Data> {
-        (*self.0).borrow_mut()
-    }
-
-    pub fn data(&self) -> f64 {
-        (*self.0).borrow().data
-    }
-
-    pub fn grad(&self) -> f64 {
-        (*self.0).borrow().grad
-    }
-
     fn topological_sort(root: &Value) -> Vec<Value> {
         fn build(root: &Value, visited: &mut HashSet<usize>, out: &mut Vec<Value>) {
             visited.insert(root.inner().id);
@@ -171,7 +179,10 @@ impl Value {
             v.inner_mut().backward();
         }
     }
+}
 
+/// Value operations supporting `backward`.
+impl Value {
     pub fn relu(&self) -> Value {
         let v = self.clone();
         let x = self.data();
@@ -181,7 +192,7 @@ impl Value {
             v.inner_mut().grad += grad * dv;
         });
 
-        let mut v = Data::new(if x > 0.0 { x } else { 0.0 });
+        let mut v = ValueData::new(if x > 0.0 { x } else { 0.0 });
         v.prev.push(self.clone());
         v.grad_fn = grad_fn;
 
@@ -279,7 +290,7 @@ macro_rules! binary_op {
                     v2.inner_mut().grad += dv2;
                 });
 
-                let mut v = Data::new(self.data() $op rhs.data());
+                let mut v = ValueData::new(self.data() $op rhs.data());
                 v.prev.push(self.clone());
                 v.prev.push(rhs.clone());
                 v.grad_fn = grad_fn;
@@ -303,7 +314,7 @@ mod tests {
 
     #[test]
     fn make_data() {
-        let v = Data::new(5.0);
+        let v = ValueData::new(5.0);
         assert_eq!(v.data, 5.0);
     }
 

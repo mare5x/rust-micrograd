@@ -1,4 +1,5 @@
-pub use ndarray::prelude::*;
+//! Module mimicking `torch.nn` using `Tensor`s.
+use ndarray::prelude::*;
 use ndarray_rand::{rand_distr::Normal, RandomExt};
 
 use crate::tensor::Tensor;

@@ -7,6 +7,8 @@ pub struct CsvFormat {
     pub y: Array2<f64>,
 }
 
+/// Helper function for reading a CSV containing a header (which is skipped) and `f64` columns.
+/// The last column is assumed to be the target variable `y` while the rest are inputs `x`.
 pub fn read_csv(path: &Path) -> Result<CsvFormat, Box<dyn Error>> {
     let mut reader = Reader::from_path(path)?;
     let mut xs = Vec::new();

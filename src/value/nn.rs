@@ -1,7 +1,9 @@
-pub use ndarray::prelude::*;
+//! Module mimicking `torch.nn` using `Value`s.  
+//! For convenience multiple `Value`s can be arranged into `ndarray` arrays.
+use ndarray::prelude::*;
 use ndarray_rand::{rand_distr::Normal, RandomExt};
 
-use crate::engine::Value;
+use crate::value::Value;
 
 /// Matrix multiply rectangular Value arrays.
 fn dot(a: &Array2<Value>, b: &Array2<Value>) -> Array2<Value> {
