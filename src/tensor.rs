@@ -2,7 +2,7 @@ use std::{
     cell::{Ref, RefCell, RefMut},
     collections::{HashMap, HashSet},
     fmt,
-    ops::{Add, Deref, Div, Mul, Sub},
+    ops::{Add, Deref, DerefMut, Div, Mul, Sub},
     rc::Rc,
     sync::atomic::AtomicUsize,
 };
@@ -92,6 +92,8 @@ impl Tensor {
         gradfn_colors.insert("mul", 2);
         gradfn_colors.insert("div", 2);
         gradfn_colors.insert("relu", 3);
+        gradfn_colors.insert("matmul", 4);
+        gradfn_colors.insert("sum", 5);
 
         fn inner(node: &Tensor, colors: &HashMap<&str, i32>) -> String {
             let id = node.inner().id;
@@ -133,8 +135,16 @@ impl Tensor {
         Ref::map((*self.0).borrow(), |mi| &mi.data)
     }
 
+    pub fn data_mut(&self) -> impl DerefMut<Target = Array2<f64>> + '_ {
+        RefMut::map((*self.0).borrow_mut(), |mi| &mut mi.data)
+    }
+
     pub fn grad(&self) -> impl Deref<Target = Array2<f64>> + '_ {
         Ref::map((*self.0).borrow(), |mi| &mi.grad)
+    }
+
+    pub fn grad_mut(&self) -> impl DerefMut<Target = Array2<f64>> + '_ {
+        RefMut::map((*self.0).borrow_mut(), |mi| &mut mi.grad)
     }
 
     pub fn item(&self) -> f64 {
@@ -167,7 +177,7 @@ impl Tensor {
         let order = Self::topological_sort(self);
 
         // d(self) w.r.t. self = 1.0
-        self.inner_mut().grad.fill(1.0);
+        self.grad_mut().fill(1.0);
         for v in order.iter() {
             v.inner_mut().backward();
         }
@@ -177,8 +187,7 @@ impl Tensor {
         let v = self.clone();
         let grad_fn = GradFn::new("relu", move |grad| {
             let dv = v.data().map(|x| if *x > 0.0 { 1.0 } else { 0.0 });
-            v.inner_mut().grad.scaled_add(1.0, &(grad * dv));
-            // v.inner_mut().grad += grad * dv;
+            v.grad_mut().scaled_add(1.0, &(grad * dv));
         });
 
         let new = self.data().map(|x| if *x > 0.0 { *x } else { 0.0 });
@@ -192,7 +201,7 @@ impl Tensor {
     pub fn sum(&self) -> Tensor {
         let v = self.clone();
         let grad_fn = GradFn::new("sum", move |grad| {
-            v.inner_mut().grad.scaled_add(1.0, &grad);
+            v.grad_mut().scaled_add(1.0, &grad);
         });
         let mut v = TensorData::new(arr2(&[[self.data().sum()]]));
         v.prev.push(self.clone());
@@ -213,8 +222,8 @@ impl Tensor {
         let grad_fn = GradFn::new("matmul", move |grad| {
             let da = grad.dot(&rhs1.data().t());
             let db = lhs.data().t().dot(&grad);
-            lhs.inner_mut().grad.scaled_add(1.0, &da);
-            rhs1.inner_mut().grad.scaled_add(1.0, &db);
+            lhs.grad_mut().scaled_add(1.0, &da);
+            rhs1.grad_mut().scaled_add(1.0, &db);
         });
 
         let c = self.data().dot(rhs.data().deref());
@@ -284,8 +293,19 @@ macro_rules! binary_op {
 
                 let grad_fn = GradFn::new(stringify!($op_name), move |grad| {
                     let (dv1, dv2) = $update_grad(&grad, v1.data().deref(), v2.data().deref());
-                    v1.inner_mut().grad.scaled_add(1.0, &dv1);
-                    v2.inner_mut().grad.scaled_add(1.0, &dv2);
+                    // If an operand is a scalar, we have to sum the individual derivative contributions together.
+                    // Otherwise, the resulting gradient shape wouldn't be correct.
+                    // E.g. d(2*[a,b,c])/d(2) = [a,b,c] -> a+b+c
+                    let dv1 = match v1.grad().dim() {
+                        (1, 1) => arr2(&[[dv1.sum()]]),
+                        (_, _) => dv1,
+                    };
+                    let dv2 = match v2.grad().dim() {
+                        (1, 1) => arr2(&[[dv2.sum()]]),
+                        (_, _) => dv2,
+                    };
+                    v1.grad_mut().scaled_add(1.0, &dv1);
+                    v2.grad_mut().scaled_add(1.0, &dv2);
                 });
 
                 let mut v = TensorData::new(self.data().deref() $op rhs.data().deref());
@@ -301,8 +321,10 @@ macro_rules! binary_op {
     };
 }
 
-binary_op![Add, add, +, |grad, _a, _b| { (grad, grad) }];
-binary_op![Sub, sub, -, |grad, _a, _b| { (grad, grad * -1.0) }];
+// N.B. The purpose of `grad * 1.0` is to get a new Array2 so that we have the same result type
+// in all macro cases. Otherwise, using just `grad` would give a reference &Array2.
+binary_op![Add, add, +, |grad, _a, _b| { (grad * 1.0, grad * 1.0) }];
+binary_op![Sub, sub, -, |grad, _a, _b| { (grad * 1.0, grad * -1.0) }];
 binary_op![Mul, mul, *, |grad, a, b| { (grad * b, grad * a) }];
 binary_op![Div, div, /, |grad, a, b| { (grad * 1.0 / b, grad * -1.0 * a / (b * b)) }];
 
@@ -375,9 +397,16 @@ mod tests {
         let v1 = Tensor::from(array![[2.0, 3.0]]);
         let mut v = 2.0 * &v1;
         assert_eq!(flat_vec(&v.data()), vec![4.0, 6.0]);
-        // TODO
-        // v.backward();
-        // assert_eq!(flat_vec(&v1.grad()), vec![2.0]);
+        v.backward();
+        assert_eq!(flat_vec(&v1.grad()), vec![2.0, 2.0]);
+
+        let v1 = Tensor::from_f64(2.0);
+        let v2 = Tensor::from(array![[2.0, 1.0]]);
+        let mut v = &v2 / &v1;
+        assert_eq!(flat_vec(&v.data()), vec![1.0, 0.5]);
+        v.backward();
+        assert_eq!(flat_vec(&v2.grad()), vec![0.5, 0.5]);
+        assert_eq!(v1.grad()[[0, 0]], -0.75);
     }
 
     #[test]
@@ -393,11 +422,14 @@ mod tests {
     fn expr_2d() {
         let v1 = Tensor::from(array![[5.0, 6.0]]);
         let v2 = Tensor::from(array![[-3.0, -2.0]]);
-        let v3 = &v1 + &v2;
-        let v4 = 2.0 * &v3;
-        let v5 = 3.0 * &v3;
-        let mut v6 = &v4 * &v5;
+        let v3 = Tensor::from_f64(0.5);
+        let v4 = &v1 + &v2;
+        let v5 = &v4 * &v3;
+        let mut v6 = &v5 / 2.0;
         v6.backward();
+        assert!(v1.grad().deref() == array![[0.25, 0.25]]);
+        assert!(v2.grad().deref() == array![[0.25, 0.25]]);
+        assert!(v3.grad().deref() == array![[3.0]]);
     }
 
     #[test]
@@ -497,6 +529,6 @@ mod tests {
         let mut v6 = &v4 * &v5;
         v6.backward();
 
-        // println!("{}", v6.to_graphviz());
+        println!("{}", v6.to_graphviz());
     }
 }
